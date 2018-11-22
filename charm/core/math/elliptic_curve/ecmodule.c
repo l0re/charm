@@ -63,21 +63,28 @@ void longObjToMPZ (mpz_t m, PyLongObject * p)
 }
 
 void setBigNum(PyLongObject *obj, BIGNUM **value) {
-	mpz_t tmp;
-	mpz_init(tmp);
-	// convert long object into an mpz_t type
-	longObjToMPZ(tmp, obj);
-	// now convert tmp into a decimal string
-	size_t tmp_len = mpz_sizeinbase(tmp, BASE_DEC) + 2;
-	char *tmp_str = (char *) malloc(tmp_len);
-	tmp_str = mpz_get_str(tmp_str, BASE_DEC, tmp);
-	debug("Element => '%s'\n", tmp_str);
-	//debug("Order of Element => '%zd'\n", tmp_len);
+  mpz_t tmp;
+  mpz_init(tmp);
+  // convert long object into an mpz_t type
+#if PY_MAJOR_VERSION < 3
+  PyObject *longObj2 = PyNumber_Long(obj);
+  longObjToMPZ(tmp, (PyLongObject *) longObj2);
+  Py_DECREF(longObj2);
+#else
+  /* for Python 3.x */
+  longObjToMPZ(tmp, (PyLongObject *) obj);
+#endif
+  // now convert tmp into a decimal string
+  size_t tmp_len = mpz_sizeinbase(tmp, BASE_DEC) + 2;
+  char *tmp_str = (char *) malloc(tmp_len);
+  tmp_str = mpz_get_str(tmp_str, BASE_DEC, tmp);
+  debug("Element => '%s'\n", tmp_str);
+  //debug("Order of Element => '%zd'\n", tmp_len);
 
-	// use BN_* to set decimal to BIGNUM
-	BN_dec2bn(value, (const char *) tmp_str);
-	free(tmp_str);
-	mpz_clear(tmp);
+  // use BN_* to set decimal to BIGNUM
+  BN_dec2bn(value, (const char *) tmp_str);
+  free(tmp_str);
+  mpz_clear(tmp);
 }
 
 /*!
@@ -241,89 +248,92 @@ PyObject *ECGroup_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 
 int ECGroup_init(ECGroup *self, PyObject *args, PyObject *kwds)
 {
-	PyObject *pObj = NULL, *aObj = NULL, *bObj = NULL;
-	char *params = NULL, *param_string = NULL;
-	int pf_len, ps_len, nid;
-    static char *kwlist[] = {"params", "param_string", "p", "a", "b", "nid", NULL};
+  PyObject *pObj = NULL, *aObj = NULL, *bObj = NULL;
+  char *params = NULL, *param_string = NULL;
+  int pf_len, ps_len, nid;
+  static char *kwlist[] = {"params", "param_string", "p", "a", "b", "nid", NULL};
 
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#s#OOOi", kwlist,
-                                      &params, &pf_len, &param_string, &ps_len,
-									  &pObj, &aObj, &bObj, &nid)) {
+  if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s#s#OOOi", kwlist,
+                                   &params, &pf_len, &param_string, &ps_len,
+                                   &pObj, &aObj, &bObj, &nid)) {
+    return -1;
+  }
+
+  debug("initializing object...\n");
+  if(pObj && aObj && bObj && !params && !param_string && !nid) {
+    // p, a, and b curve parameters are set...
+    if(!PyLong_Check(pObj) || !PyLong_Check(aObj) || !PyLong_Check(bObj))
+    {
+      return -1;
+    }
+
+    BIGNUM *p,*a,*b;
+    p = BN_new();
+    setBigNum((PyLongObject *) pObj, &p);
+
+    // make sure p is prime then continue loading a and b parameters for EC
+    if(BN_is_prime_ex(p, BN_prime_checks, self->ctx, NULL) != 1) {
+      debug("p is not prime.\n");
+      BN_free(p);
+      PyErr_SetString(PyECErrorObject, "p must be a prime integer.");
+      return -1;
+    }
+
+    a = BN_new();
+    b = BN_new();
+    setBigNum((PyLongObject *) aObj, &a);
+    setBigNum((PyLongObject *) bObj, &b);
+    debug("p (bn) is now '%s'\n", BN_bn2dec(p));
+    debug("a (bn) is now '%s'\n", BN_bn2dec(a));
+    debug("b (bn) is now '%s'\n", BN_bn2dec(b));
+    // now we can instantiate the ec_group
+    self->ec_group = EC_GROUP_new_curve_GFp(p, a, b, self->ctx);
+    if(!self->ec_group) {
+      EC_GROUP_free(self->ec_group);
+      PyErr_SetString(PyECErrorObject, "could not initialize ec group.");
+      BN_free(p);
+      BN_free(a);
+      BN_free(b);
+      return -1;
+    }
+    BN_free(p);
+    BN_free(a);
+    BN_free(b);
+    debug("Now, we're finished.\n");
+  }
+  // check if builtin curve specified.
+  else if(nid > 0 && !pObj && !aObj && !bObj && !params && !param_string) {
+    debug("nid => %d == %s...\n", nid, OBJ_nid2sn(nid));
+    self->ec_group = EC_GROUP_new_by_curve_name(nid);
+    if(self->ec_group == NULL) {
+      EC_GROUP_free(self->ec_group);
+      printf("could not find curve: error code = %s.", OBJ_nid2sn(nid));
+      PyErr_SetString(PyECErrorObject, "can't find specified curve.");
+      return -1;
+    }
+#ifdef DEBUG
+		printf("OK!\n");
+#endif
+    debug("ec group check...\n");
+    if(!EC_GROUP_check(self->ec_group, self->ctx)) {
+        EC_GROUP_free(self->ec_group);
+        PyErr_SetString(PyECErrorObject, "group check failed, try another curve.");
         return -1;
-	}
-
-    debug("initializing object...\n");
-    if(pObj && aObj && bObj && !params && !param_string && !nid) {
-    	// p, a, and b curve parameters are set...
-    	if(!PyLong_Check(pObj) || !PyLong_Check(aObj) || !PyLong_Check(bObj)) { return -1; }
-
-    	BIGNUM *p,*a,*b;
-    	p = BN_new();
-    	setBigNum((PyLongObject *) pObj, &p);
-
-    	// make sure p is prime then continue loading a and b parameters for EC
-    	if(BN_is_prime_ex(p, BN_prime_checks, self->ctx, NULL) != 1) {
-    		debug("p is not prime.\n");
-    		BN_free(p);
-    		PyErr_SetString(PyECErrorObject, "p must be a prime integer.");
-    		return -1;
-    	}
-
-    	a = BN_new();
-    	b = BN_new();
-		setBigNum((PyLongObject *) aObj, &a);
-		setBigNum((PyLongObject *) bObj, &b);
-		debug("p (bn) is now '%s'\n", BN_bn2dec(p));
-		debug("a (bn) is now '%s'\n", BN_bn2dec(a));
-		debug("b (bn) is now '%s'\n", BN_bn2dec(b));
-    	// now we can instantiate the ec_group
-    	self->ec_group = EC_GROUP_new_curve_GFp(p, a, b, self->ctx);
-    	if(!self->ec_group) {
-    		EC_GROUP_free(self->ec_group);
-    		PyErr_SetString(PyECErrorObject, "could not initialize ec group.");
-    		BN_free(p);
-    		BN_free(a);
-    		BN_free(b);
-    		return -1;
-    	}
-    	BN_free(p);
-    	BN_free(a);
-    	BN_free(b);
-    	debug("Now, we're finished.\n");
     }
-    // check if builtin curve specified.
-    else if(nid > 0 && !pObj && !aObj && !bObj && !params && !param_string) {
-    	debug("nid => %d == %s...\n", nid, OBJ_nid2sn(nid));
-    	self->ec_group = EC_GROUP_new_by_curve_name(nid);
-    	if(self->ec_group == NULL) {
-    		EC_GROUP_free(self->ec_group);
-    		printf("could not find curve: error code = %s.", OBJ_nid2sn(nid));
-    		PyErr_SetString(PyECErrorObject, "can't find specified curve.");
-    		return -1;
-    	}
+    self->nid = nid;
 #ifdef DEBUG
 		printf("OK!\n");
 #endif
-    	debug("ec group check...\n");
-		if(!EC_GROUP_check(self->ec_group, self->ctx)) {
-    		EC_GROUP_free(self->ec_group);
-    		PyErr_SetString(PyECErrorObject, "group check failed, try another curve.");
-    		return -1;
-		}
-		self->nid = nid;
-#ifdef DEBUG
-		printf("OK!\n");
-#endif
-    }
-    else {
-		PyErr_SetString(PyECErrorObject, "invalid input. try again.");
-		return -1;
-    }
+  }
+  else {
+    PyErr_SetString(PyECErrorObject, "invalid input. try again.");
+    return -1;
+  }
 
-	// obtain the order of the elliptic curve and store in group object
-	EC_GROUP_get_order(self->ec_group, self->order, self->ctx);
-	self->group_init = TRUE;
-    return 0;
+  // obtain the order of the elliptic curve and store in group object
+  EC_GROUP_get_order(self->ec_group, self->order, self->ctx);
+  self->group_init = TRUE;
+  return 0;
 }
 
 PyObject *ECElement_call(ECElement *intObject, PyObject *args, PyObject *kwds) {
@@ -345,65 +355,77 @@ PyObject *ECGroup_print(ECGroup *self) {
 	char *bstr = BN_bn2dec(b);
 	PyObject *strObj = PyUnicode_FromFormat("Curve '%s' => y^2 = x^3 + a*x + b  (mod p):\np = %s\na = %s\nb = %s", id, (const char *) pstr,
 											(const char *) astr, (const char *) bstr);
-	OPENSSL_free(pstr); OPENSSL_free(astr); OPENSSL_free(bstr);
-	BN_free(p); BN_free(a); BN_free(b);
+	OPENSSL_free(pstr);
+	OPENSSL_free(astr);
+	OPENSSL_free(bstr);
+	BN_free(p);
+	BN_free(a);
+	BN_free(b);
 	return strObj;
 }
 
 PyObject *ECElement_print(ECElement *self) {
-	if(self->type == ZR) {
-		if(!self->point_init)
-			return PyUnicode_FromString("");
-		char *Zstr = BN_bn2dec(self->elemZ);
-		PyObject *strObj = PyUnicode_FromString((const char *) Zstr);
-		OPENSSL_free(Zstr);
-		return strObj;
-	}
-	else if(self->type == G) {
-		if(!self->point_init)
-			return PyUnicode_FromString("");
-		VERIFY_GROUP(self->group);
+  if(self->type == ZR) {
+    if(!self->point_init)
+      return PyUnicode_FromString("");
+    char *Zstr = BN_bn2dec(self->elemZ);
+    PyObject *strObj = PyUnicode_FromString((const char *) Zstr);
+    OPENSSL_free(Zstr);
+    return strObj;
+  }
+  else if(self->type == G) {
+    if(!self->point_init)
+      return PyUnicode_FromString("");
+    VERIFY_GROUP(self->group);
 
-		BIGNUM *x = BN_new(), *y = BN_new();
-		EC_POINT_get_affine_coordinates_GFp(self->group->ec_group, self->P, x, y, self->group->ctx);
-		char *xstr = BN_bn2dec(x);
-		char *ystr = BN_bn2dec(y);
-		//debug("P -> x = %s\n", xstr);
-		//debug("P -> y = %s\n", ystr);
-		PyObject *strObj = PyUnicode_FromFormat("[%s, %s]", (const char *)xstr, (const char *)ystr);
-		OPENSSL_free(xstr);
-		OPENSSL_free(ystr);
-		BN_free(x);
-		BN_free(y);
-		return strObj;
-	}
+    BIGNUM *x = BN_new(), *y = BN_new();
+    EC_POINT_get_affine_coordinates_GFp(self->group->ec_group, self->P, x, y, self->group->ctx);
+    char *xstr = BN_bn2dec(x);
+    char *ystr = BN_bn2dec(y);
+    //debug("P -> x = %s\n", xstr);
+    //debug("P -> y = %s\n", ystr);
+    PyObject *strObj = PyUnicode_FromFormat("[%s, %s]", (const char *)xstr, (const char *)ystr);
+    OPENSSL_free(xstr);
+    OPENSSL_free(ystr);
+    BN_free(x);
+    BN_free(y);
+    return strObj;
+  }
 
-	return (PyObject *) PyUnicode_FromString("");
+  return (PyObject *) PyUnicode_FromString("");
 }
 
 PyObject *ECE_init(ECElement *self, PyObject *args) {
-	GroupType type = NONE_G;
-	ECElement *obj;
-	ECGroup *gobj = NULL;
+  GroupType type = NONE_G;
+  ECElement *obj;
+  ECGroup *gobj = NULL;
+  PyObject *long_obj = NULL;
 
-	if(PyArg_ParseTuple(args, "Oi", &gobj, &type)) {
-		VERIFY_GROUP(gobj);
+  if(PyArg_ParseTuple(args, "Oi|O", &gobj, &type, &long_obj)) {
+    VERIFY_GROUP(gobj);
 
-		if(type == G) {
-			debug("init element in group G.\n");
-			obj = createNewPoint(G, gobj); // ->group, gobj->ctx);
-			return (PyObject *) obj;
-		}
-		else if(type == ZR) {
-			debug("init element of ZR.\n");
-			obj = createNewPoint(ZR, gobj); // ->group, gobj->ctx);
-			return (PyObject *) obj;
-		}
-		else {
-			EXIT_IF(TRUE, "invalid type selected.");
-		}
-	}
-	EXIT_IF(TRUE, "invalid argument.");
+    if(type == G) {
+      debug("init element in group G.\n");
+      obj = createNewPoint(G, gobj);
+      return (PyObject *) obj;
+    }
+    else if(type == ZR) {
+      debug("init element of ZR.\n");
+      obj = createNewPoint(ZR, gobj);
+      if(long_obj != NULL) {
+        if (_PyLong_Check(long_obj)) {
+          setBigNum((PyLongObject *) long_obj, &obj->elemZ);
+        } else {
+          EXIT_IF(TRUE, "expecting a number (int or long)");
+        }
+      }
+      return (PyObject *) obj;
+    }
+    else {
+      EXIT_IF(TRUE, "invalid type selected.");
+    }
+  }
+  EXIT_IF(TRUE, "invalid argument.");
 }
 
 PyObject *ECE_random(ECElement *self, PyObject *args)
@@ -1258,16 +1280,17 @@ static PyObject *ECE_hash(ECElement *self, PyObject *args) {
 static PyObject *ECE_encode(ECElement *self, PyObject *args) {
 	PyObject *old_m;
 	uint8_t *old_msg;
-	int msg_len, bits = -1, ctr = 1, ERROR_SET = FALSE; // always have a ctr start from 1
+	int include_ctr = FALSE;
+	uint32_t msg_len, ctr = 1, ERROR_SET = FALSE; // always have a ctr start from 1
 	BIGNUM *x = NULL, *y = NULL;
 	ECGroup *gobj = NULL;
 
-	if(PyArg_ParseTuple(args, "OO|i", &gobj, &old_m, &bits)) {
+	if(PyArg_ParseTuple(args, "OO|i", &gobj, &old_m, &include_ctr)) {
 		VERIFY_GROUP(gobj);
 
 		if(PyBytes_Check(old_m)) {
 			old_msg = (uint8_t *) PyBytes_AS_STRING(old_m);
-			msg_len = strlen((char *) old_msg);
+			msg_len = PyBytes_Size(old_m);
 			debug("Encoding hex msg => ");
 			// check if msg len is big enough to fit into length
 			printf_buffer_as_hex((uint8_t *) old_msg, msg_len);
@@ -1277,90 +1300,82 @@ static PyObject *ECE_encode(ECElement *self, PyObject *args) {
 			/* return error */
 			EXIT_IF(TRUE, "message not a bytes object");
 		}
+
 		// make sure msg will fit into group (get order num bits / 8)
-		int max_len = (BN_num_bits(gobj->order) / BYTE);
+		int max_len = BN_num_bytes(gobj->order);  //  (BN_num_bits(gobj->order) / BYTE);
 		debug("max msg len => '%d'\n", max_len);
 
-		char msg[max_len+2];
-		msg[0] = msg_len & 0xFF;
-		snprintf((msg+1), max_len+1, "%s", old_msg); //copying message over
-		msg_len = msg_len + 1; //we added an extra byte
-
 		debug("msg_len accepted => '%d'\n", msg_len);
-		if(bits > 0) {
-			debug("bits were specified.\n");
-		}
-		else {
-			// use default of 32-bits (4 bytes) to represent ctr
-			if(msg_len + 1 <= max_len) {
-				// concatenate msg
-				int len = msg_len + sizeof(uint32_t);
-				char *input = (char *) malloc(len + 1);
-				memset(input, 0, len);
-				memcpy(input, msg, msg_len);
-				int TryNextCTR = TRUE;
-				ECElement *encObj = NULL;
-                y=BN_new();
-                x=BN_new();
-				do {
-                    
-                    if(encObj!=NULL)
-                        Py_DECREF(encObj);
-					/* 				1-byte    < max_len    ctr
-					 * encoding [   size   |    msg     | \x01 \x00 \x00 \x00]
-					 */
-					*((uint32_t*)(input + msg_len)) = (uint32_t) ctr;
-					len = strlen(input); // accounts for null bytes (if any) at the end
-
-					if(len > max_len) {
-						/* message probably cannot be encoded, reduce size */
-						ERROR_SET=TRUE;
-						break;
-					}
-
-					debug("input hex msg => ");
-					// check if msg len is big enough to fit into length
-					printf_buffer_as_hex((uint8_t *) input, len);
-					encObj = createNewPoint(G, gobj);
-					BN_bin2bn((const uint8_t *) input, len, x);
-					BN_init(y);
-					char *xstr = BN_bn2dec(x);
-					debug("gen x => %s\n", xstr);
-					OPENSSL_free(xstr);
-					EC_POINT_set_compressed_coordinates_GFp(gobj->ec_group, encObj->P, x, 1, gobj->ctx);
-					EC_POINT_get_affine_coordinates_GFp(gobj->ec_group, encObj->P, x, y, gobj->ctx);
-
-					if(BN_is_zero(x) || BN_is_zero(y)) {
-						ctr++;
-						continue;
-					}
-
-					if(EC_POINT_is_on_curve(gobj->ec_group, encObj->P, gobj->ctx)) {
-						debug("point is on curve!\n");
-						debug("final hex msg => ");
-						// check if msg len is big enough to fit into length
-						printf_buffer_as_hex((uint8_t *) input, len);
-						free(input);
-						TryNextCTR = FALSE;
-					}
-					else {
-						ctr++;
-					}
-				}while(TryNextCTR);
-
-				BN_free(x);
-				BN_free(y);
-
-				return (PyObject *) encObj;
-			}
-			else {
-				EXIT_IF(TRUE, "message too large for selected group. Call object 'bitsize()' function for maximum message size.");
-
-			}
+		int len = msg_len;
+		if (include_ctr == FALSE) {
+            len += RESERVED_ENCODING_BYTES;
 		}
 
-		// concatenate 'ctr' to buffer and set x coordinate and plot on curve
+        // use default of 32-bits (4 bytes) to represent ctr
+        // concatenate 'ctr' to buffer and set x coordinate and test for y coordiate on curve
 		// if point not on curve, increment ctr by 1
+        if(len == max_len) {
+            // concatenate msg
+            char *input = (char *) malloc(len + 1);
+            memset(input, 0, len);
+            memcpy(input, old_msg, msg_len);
+            int TryNextCTR = TRUE;
+            ECElement *encObj = NULL;
+            y=BN_new();
+            x=BN_new();
+            do {
+
+                if(encObj!=NULL)
+                    Py_DECREF(encObj);
+
+                if (include_ctr == FALSE) {
+                    /* 		       == msg_len       ctr
+                     * encoding [    message    |  \x01 \x00 \x00 \x00 ]
+                     */
+                    *((uint32_t*)(input + msg_len)) = (uint32_t) ctr;
+                }
+
+                debug("input hex msg => ");
+                // check if msg len is big enough to fit into length
+                printf_buffer_as_hex((uint8_t *) input, len);
+                encObj = createNewPoint(G, gobj);
+                BN_bin2bn((const uint8_t *) input, len, x);
+                BN_free(y);
+                y = BN_new();
+                // Uncomment for debugging purposes
+                //char *xstr = BN_bn2dec(x);
+                //debug("gen x => %s\n", xstr);
+                //OPENSSL_free(xstr);
+                EC_POINT_set_compressed_coordinates_GFp(gobj->ec_group, encObj->P, x, 1, gobj->ctx);
+                EC_POINT_get_affine_coordinates_GFp(gobj->ec_group, encObj->P, x, y, gobj->ctx);
+
+                if(BN_is_zero(x) || BN_is_zero(y)) {
+                    ctr++;
+                    continue;
+                }
+
+                if(EC_POINT_is_on_curve(gobj->ec_group, encObj->P, gobj->ctx)) {
+                    debug("point is on curve!\n");
+                    debug("final hex msg => ");
+                    // check if msg len is big enough to fit into length
+                    printf_buffer_as_hex((uint8_t *) input, len);
+                    free(input);
+                    TryNextCTR = FALSE;
+                }
+                else {
+                    ctr++;
+                }
+            }while(TryNextCTR);
+
+            BN_free(x);
+            BN_free(y);
+
+            return (PyObject *) encObj;
+        }
+        else {
+            printf("expected message len: %d, you provided: %d\n", (max_len - sizeof(uint32_t)), msg_len);
+            EXIT_IF(TRUE, "message length does not match the selected group size.");
+        }
 	}
 
 	EXIT_IF(ERROR_SET, "Ran out of counters. So, could not be encode message at given length. make it smaller.");
@@ -1369,14 +1384,16 @@ static PyObject *ECE_encode(ECElement *self, PyObject *args) {
 	return Py_False;
 }
 
+
 /*
  * Decode a group element to a message (PyUnicode_String)
  */
 static PyObject *ECE_decode(ECElement *self, PyObject *args) {
 	ECElement *obj = NULL;
 	ECGroup *gobj = NULL;
+	int include_ctr = FALSE;
 
-	if(PyArg_ParseTuple(args, "OO", &gobj, &obj)) {
+	if(PyArg_ParseTuple(args, "OO|i", &gobj, &obj, &include_ctr)) {
 		VERIFY_GROUP(gobj);
 
 		// make sure it is a point and not a scalar
@@ -1385,31 +1402,35 @@ static PyObject *ECE_decode(ECElement *self, PyObject *args) {
 			// verifies that element is on the curve then gets coordinates
 			EC_POINT_get_affine_coordinates_GFp(gobj->ec_group, obj->P, x, y, gobj->ctx);
 
-			int max_byte_len = BN_num_bytes(gobj->order) - RESERVED_ENCODING_BYTES;
-			debug("Size of order => '%d'\n", max_byte_len);
+            int max_byte_len = BN_num_bytes(gobj->order);
+            int prepend_zeros = max_byte_len;
+            // by default we will strip out the counter part (unless specified otherwise by user)
+            if (include_ctr == FALSE) {
+                max_byte_len -= RESERVED_ENCODING_BYTES;
+	        }
+            debug("Size of order => '%d'\n", max_byte_len);
 			int x_len = BN_num_bytes(x);
+			prepend_zeros -= x_len;
+			if (prepend_zeros > 0) {
+                x_len += prepend_zeros;
+			}
 			uint8_t *xstr = (uint8_t*) malloc(x_len + 1);
 			memset(xstr, 0, x_len);
 			debug("Size of xstr => '%d'\n", x_len);
-			BN_bn2bin(x, xstr);
+			// BN_bn2bin does not include leading null bytes that might've been included in original message
+			// so doing that here by counting length and then pre-pending zeroes
+			BN_bn2bin(x, (uint8_t*)(xstr + prepend_zeros));
 			debug("Decoded x => ");
-			printf_buffer_as_hex((uint8_t *) xstr, x_len);
+			printf_buffer_as_hex((uint8_t *) (xstr), x_len);
 			BN_free(x);
 			BN_free(y);
 
-			int size_msg = xstr[0];  // first byte should be length of string
-			debug("size_msg to decode = '%d'\n", size_msg);
-			if(size_msg > max_byte_len) {
-				OPENSSL_free(xstr);
-				EXIT_IF(TRUE, "unable to decode this message.\n");
-			}
-
-			PyObject *decObj = PyBytes_FromStringAndSize((char *)(xstr + 1), size_msg);
+            int size_msg = max_byte_len;
+			PyObject *decObj = PyBytes_FromStringAndSize(xstr, size_msg);
 			OPENSSL_free(xstr);
 			return decObj;
 		}
 	}
-
 
 	EXIT_IF(TRUE, "invalid argument");
 }
@@ -1841,8 +1862,8 @@ static int ec_traverse(PyObject *m, visitproc visit, void *arg) {
 }
 
 static int ec_clear(PyObject *m) {
-	Py_CLEAR(GETSTATE(m)->error);
-    Py_XDECREF(PyECErrorObject);
+  Py_CLEAR(GETSTATE(m)->error);
+  Py_XDECREF(PyECErrorObject);
 	return 0;
 }
 
@@ -1920,9 +1941,9 @@ void initelliptic_curve(void) 		{
 
 LEAVE:
 	if (PyErr_Occurred()) {
-		PyErr_Clear();
-        Py_XDECREF(m);
-	    INITERROR;
+    PyErr_Clear();
+    Py_XDECREF(m);
+    INITERROR;
 	}
 
 #if PY_MAJOR_VERSION >= 3

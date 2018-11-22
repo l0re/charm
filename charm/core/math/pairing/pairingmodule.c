@@ -1104,7 +1104,10 @@ static PyObject *Element_set(Element *self, PyObject *args)
     long int value;
     int errcode = TRUE;
 
-    EXITCODE_IF(self->elem_initialized == FALSE, "must initialize element to a field (G1,G2,GT, or Zr)", FALSE);
+	if(self->elem_initialized == FALSE){
+		PyErr_SetString(PyExc_ValueError, "Must initialize element to a field (G1, G2, or GT).");
+		return NULL;
+	}
 
     debug("Creating a new element\n");
     if(PyArg_ParseTuple(args, "l", &value)) {
@@ -1123,8 +1126,9 @@ static PyObject *Element_set(Element *self, PyObject *args)
     else if(PyArg_ParseTuple(args, "O", &object)){
             element_set(self->e, object->e);
     }
-    else { //
-    	EXITCODE_IF(TRUE, "type not supported: signed int or Element object", FALSE);
+    else {
+    	// PyArg_ParseTuple already set the due error type and string
+            return NULL;
     }
 
     return Py_BuildValue("i", errcode);
@@ -1132,8 +1136,15 @@ static PyObject *Element_set(Element *self, PyObject *args)
 
 static PyObject  *Element_initPP(Element *self, PyObject *args)
 {
-    EXITCODE_IF(self->elem_initPP == TRUE, "initialized the pre-processing function already", FALSE);
-    EXITCODE_IF(self->elem_initialized == FALSE, "must initialize element to a field (G1,G2, or GT)", FALSE);
+	if(self->elem_initPP == TRUE){
+		PyErr_SetString(PyExc_ValueError, "Pre-processing table alreay initialized.");
+		return NULL;
+	}
+
+	if(self->elem_initialized == FALSE){
+		PyErr_SetString(PyExc_ValueError, "Must initialize element to a field (G1, G2, or GT).");
+		return NULL;
+	}
 
     /* initialize and store preprocessing information in e_pp */
     if(self->element_type >= G1 && self->element_type <= GT) {
@@ -1217,7 +1228,7 @@ PyObject *multi_pairing(Pairing *groupObj, PyObject *listG1, PyObject *listG2) {
 /* this is a type method that is visible on the global or class level. Therefore,
    the function prototype needs the self (element class) and the args (tuple of Element objects).
  */
-PyObject *Apply_pairing(Element *self, PyObject *args)
+PyObject *Apply_pairing(PyObject *self, PyObject *args)
 {
 	// lhs => G1 and rhs => G2
 	Element *newObject, *lhs, *rhs;
@@ -1225,50 +1236,68 @@ PyObject *Apply_pairing(Element *self, PyObject *args)
 	PyObject *lhs2, *rhs2;
 	
 	debug("Applying pairing...\n");	
-	if(!PyArg_ParseTuple(args, "OO|O", &lhs2, &rhs2, &group)) {
-		EXIT_IF(TRUE, "invalid arguments: G1, G2, groupObject.");
+	if(!PyArg_ParseTuple(args, "OO|O:pairing_prod", &lhs2, &rhs2, &group)) {
+		// EXIT_IF(TRUE, "invalid arguments: G1, G2, groupObject.");
+		return NULL;
 	}
 	
 	if(PySequence_Check(lhs2) && PySequence_Check(rhs2)) {
 		VERIFY_GROUP(group);
 		return multi_pairing(group, lhs2, rhs2);
 	}
-	else if(PyElement_Check(lhs2) && PyElement_Check(rhs2)) {
-
-		lhs = (Element *) lhs2;
-		rhs = (Element *) rhs2;
-		IS_SAME_GROUP(lhs, rhs);
-		if(pairing_is_symmetric(lhs->pairing->pair_obj)) {
-
-			debug("Pairing is symmetric.\n");
-			debug_e("LHS: '%B'\n", lhs->e);
-			debug_e("RHS: '%B'\n", rhs->e);
-			newObject = createNewElement(GT, lhs->pairing);
-			pairing_apply(newObject->e, lhs->e, rhs->e, rhs->pairing->pair_obj);
-#ifdef BENCHMARK_ENABLED
-			UPDATE_BENCHMARK(PAIRINGS, newObject->pairing->dBench);
-#endif
-			return (PyObject *) newObject;
-		}
-
-		if(Check_Elements(lhs, rhs) && pair_rule(lhs->element_type, rhs->element_type) == TRUE) {
-			// apply pairing
-			debug_e("LHS: '%B'\n", lhs->e);
-			debug_e("RHS: '%B'\n", rhs->e);
-			newObject = createNewElement(GT, lhs->pairing);
-			if(lhs->element_type == G1)
-				pairing_apply(newObject->e, lhs->e, rhs->e, rhs->pairing->pair_obj);
-			else if(lhs->element_type == G2)
-				pairing_apply(newObject->e, rhs->e, lhs->e, rhs->pairing->pair_obj);
-
-#ifdef BENCHMARK_ENABLED
-			UPDATE_BENCHMARK(PAIRINGS, newObject->pairing->dBench);
-#endif
-			return (PyObject *) newObject;
-		}
-	}
 	
-	EXIT_IF(TRUE, "pairings only apply to elements of G1 x G2 --> GT");
+	if(!PyElement_Check(lhs2)){
+		PyErr_SetString(PyExc_TypeError, "Left value is not a valid Element or Sequence of Elements type.");
+		return NULL;
+	}
+
+	if(!PyElement_Check(rhs2)){
+		PyErr_SetString(PyExc_TypeError, "Right value is not a valid Element or Sequence of Elements type.");
+		return NULL;
+	}
+
+	lhs = (Element *) lhs2;
+	rhs = (Element *) rhs2;
+	IS_SAME_GROUP(lhs, rhs);
+	if(pairing_is_symmetric(lhs->pairing->pair_obj)) {
+		debug("Pairing is symmetric.\n");
+		debug_e("LHS: '%B'\n", lhs->e);
+		debug_e("RHS: '%B'\n", rhs->e);
+		newObject = createNewElement(GT, lhs->pairing);
+		pairing_apply(newObject->e, lhs->e, rhs->e, rhs->pairing->pair_obj);
+#ifdef BENCHMARK_ENABLED
+		UPDATE_BENCHMARK(PAIRINGS, newObject->pairing->dBench);
+#endif
+		return (PyObject *) newObject;
+	}
+
+	if(lhs->element_type == rhs->element_type){
+		if(lhs->element_type == G1){
+			PyErr_SetString(PyExc_ValueError, "Both elements are of type G1 in asymmetric pairing");
+			return NULL;
+		}
+		if(lhs->element_type == G2){
+			PyErr_SetString(PyExc_ValueError, "Both elements are of type G2 in asymmetric pairing");
+			return NULL;
+		}
+		PyErr_SetString(PyExc_ValueError, "Unexpected elements type in asymmetric pairing product");
+		return NULL;
+	}
+
+	// execute asymmetric pairing
+	debug_e("LHS: '%B'\n", lhs->e);
+	debug_e("RHS: '%B'\n", rhs->e);
+	newObject = createNewElement(GT, lhs->pairing);
+	if(lhs->element_type == G1)
+		pairing_apply(newObject->e, lhs->e, rhs->e, rhs->pairing->pair_obj);
+	else if(lhs->element_type == G2)
+		pairing_apply(newObject->e, rhs->e, lhs->e, rhs->pairing->pair_obj);
+
+#ifdef BENCHMARK_ENABLED
+	UPDATE_BENCHMARK(PAIRINGS, newObject->pairing->dBench);
+#endif
+	return (PyObject *) newObject;
+
 }
 
 PyObject *sha2_hash(Element *self, PyObject *args) {
@@ -1516,6 +1545,15 @@ static long Element_index(Element *o1) {
 		mpz_clear(o);
 		Py_XDECREF(temp);
 	}
+	if(o1->element_type != NONE_G){
+		uint8_t *buff;
+		size_t len;
+		len = element_length_in_bytes(o1->e);
+		buff = (uint8_t*) malloc(len);
+		element_to_bytes(buff, o1->e);
+		result = PyObject_Hash(PyBytes_FromStringAndSize((char*)buff, len));
+		free(buff);
+	}
 	return result;
 }
 
@@ -1524,17 +1562,24 @@ UNARY(instance_invert, 'i', Element_invert)
 BINARY(instance_add, 'a', Element_add)
 BINARY(instance_sub, 's', Element_sub)
 
-static PyObject *Serialize_cmp(Element *o1, PyObject *args) {
+static PyObject *Serialize_cmp(PyObject *self, PyObject *args) {
 
-	Element *self = NULL;
-	if(!PyArg_ParseTuple(args, "O", &self)) {
-		PyErr_SetString(ElementError, "invalid argument.");
+	Element *element = NULL;
+	int compression = 1;
+
+#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 3
+	if(!PyArg_ParseTuple(args, "O|p:serialize", &element, &compression))
+#else
+	if(!PyArg_ParseTuple(args, "O|i:serialize", &element, &compression))
+#endif
+        return NULL;
+
+	if(!PyElement_Check(element)) {
+		PyErr_SetString(PyExc_TypeError, "Invalid element type.");
 		return NULL;
 	}
-
-	if(!PyElement_Check(self)) EXIT_IF(TRUE, "not a valid element object.");
-	if(self->elem_initialized == FALSE) {
-		PyErr_SetString(ElementError, "element not initialized.");
+	if(element->elem_initialized == FALSE) {
+		PyErr_SetString(PyExc_ValueError, "Element not initialized.");
 		return NULL;
 	}
 
@@ -1542,75 +1587,99 @@ static PyObject *Serialize_cmp(Element *o1, PyObject *args) {
 	uint8_t *data_buf = NULL;
 	size_t bytes_written;
 
-	if(self->element_type == ZR || self->element_type == GT) {
-		elem_len = element_length_in_bytes(self->e);
-
+	if(element->element_type == ZR || element->element_type == GT) {
+		elem_len = element_length_in_bytes(element->e);
 		data_buf = (uint8_t *) malloc(elem_len + 1);
-		EXIT_IF(data_buf == NULL, "out of memory.");
+		if(data_buf == NULL)
+			return PyErr_NoMemory();
 		// write to char buffer
-		bytes_written = element_to_bytes(data_buf, self->e);
+		bytes_written = element_to_bytes(data_buf, element->e);
 		debug("result => ");
 		printf_buffer_as_hex(data_buf, bytes_written);
 	}
-	else if(self->element_type != NONE_G) {
+	else if(element->element_type != NONE_G) {
 	// object initialized now retrieve element and serialize to a char buffer.
-		elem_len = element_length_in_bytes_compressed(self->e);
+		if(compression){
+			elem_len = element_length_in_bytes_compressed(element->e);
+		}else{
+			elem_len = element_length_in_bytes(element->e);
+		}
 		data_buf = (uint8_t *) malloc(elem_len + 1);
-		EXIT_IF(data_buf == NULL, "out of memory.");
+		if(data_buf == NULL)
+			return PyErr_NoMemory();
 		// write to char buffer
-		bytes_written = element_to_bytes_compressed(data_buf, self->e);
+		if(compression){
+			bytes_written = element_to_bytes_compressed(data_buf, element->e);
+		} else {
+			bytes_written = element_to_bytes(data_buf, element->e);
+		}
 	}
 	else {
-		EXIT_IF(TRUE, "invalid type.\n");
+		PyErr_SetString(PyExc_TypeError, "Invalid element type.");
+		return NULL;
 	}
 
 	// convert to base64 and return as a string?
 	size_t length = 0;
 	char *base64_data_buf = NewBase64Encode(data_buf, bytes_written, FALSE, &length);
-	//PyObject *result = PyUnicode_FromFormat("%d:%s", self->element_type, (const char *) base64_data_buf);
+	//PyObject *result = PyUnicode_FromFormat("%d:%s", element->element_type, (const char *) base64_data_buf);
 	// free(base64_data_buf);
-	PyObject *result = PyBytes_FromFormat("%d:%s", self->element_type, (const char *) base64_data_buf);
+	PyObject *result = PyBytes_FromFormat("%d:%s", element->element_type, (const char *) base64_data_buf);
 	debug("base64 enc => '%s'\n", base64_data_buf);
 	free(base64_data_buf);
 	free(data_buf);
 	return result;
 }
 
-static PyObject *Deserialize_cmp(Element *self, PyObject *args) {
+static PyObject *Deserialize_cmp(PyObject *self, PyObject *args) {
 	Element *origObject = NULL;
 	Pairing *group = NULL;
 	PyObject *object;
+	int compression = 1;
 
-	if(PyArg_ParseTuple(args, "OO", &group, &object)) {
-		VERIFY_GROUP(group);
-		if(PyBytes_Check(object)) {
-			uint8_t *serial_buf = (uint8_t *) PyBytes_AsString(object);
-			int type = atoi((const char *) &(serial_buf[0]));
-			uint8_t *base64_buf = (uint8_t *)(serial_buf + 2);
+#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 3
+	if(!PyArg_ParseTuple(args, "OO|p:deserialize", &group, &object, &compression))
+#else
+	if(!PyArg_ParseTuple(args, "OO|i:deserialize", &group, &object, &compression))
+#endif
+		return NULL;
 
-			size_t deserialized_len = 0;
-			uint8_t *binary_buf = NewBase64Decode((const char *) base64_buf, strlen((char *) base64_buf), &deserialized_len);
+	VERIFY_GROUP(group);
 
-			if((type == ZR || type == GT) && deserialized_len > 0) {
-//				debug("result => ");
-//				printf_buffer_as_hex(binary_buf, deserialized_len);
-				origObject = createNewElement(type, group);
-				element_from_bytes(origObject->e, binary_buf);
-				free(binary_buf);
-				return (PyObject *) origObject;
-			}
-			else if((type == G1 || type == G2) && deserialized_len > 0) {
-				// now convert element back to an element type (assume of type ZR for now)
-				origObject = createNewElement(type, group);
-				element_from_bytes_compressed(origObject->e, binary_buf);
-				free(binary_buf);
-				return (PyObject *) origObject;
-			}
-		}
-		EXIT_IF(TRUE, "string object malformed.");
+	if(!PyBytes_Check(object)){
+		PyErr_SetString(PyExc_TypeError, "Serialized object must be bytes.");
+		return NULL;
 	}
 
-	EXIT_IF(TRUE, "nothing to deserialize in element.");
+	uint8_t *serial_buf = (uint8_t *) PyBytes_AsString(object);
+	int type = atoi((const char *) &(serial_buf[0]));
+	uint8_t *base64_buf = (uint8_t *)(serial_buf + 2);
+
+	size_t deserialized_len = 0;
+	uint8_t *binary_buf = NewBase64Decode((const char *) base64_buf, strlen((char *) base64_buf), &deserialized_len);
+
+	if((type == ZR || type == GT) && deserialized_len > 0) {
+	//				debug("result => ");
+	//				printf_buffer_as_hex(binary_buf, deserialized_len);
+		origObject = createNewElement(type, group);
+		element_from_bytes(origObject->e, binary_buf);
+		free(binary_buf);
+		return (PyObject *) origObject;
+	}
+	else if((type == G1 || type == G2) && deserialized_len > 0) {
+		// now convert element back to an element type (assume of type ZR for now)
+		origObject = createNewElement(type, group);
+		if(compression) {
+			element_from_bytes_compressed(origObject->e, binary_buf);
+		} else {
+			element_from_bytes(origObject->e, binary_buf);
+		}
+		free(binary_buf);
+		return (PyObject *) origObject;
+	}
+
+	PyErr_SetString(PyExc_ValueError, "Nothing to deserialize in element.");
+	return NULL;
 }
 
 void print_mpz(mpz_t x, int base) {
@@ -1765,211 +1834,211 @@ PyTypeObject PairingType = {
 #else
 /* python 2.x series */
 PyTypeObject PairingType = {
-    PyObject_HEAD_INIT(NULL)
-    0,                         /*ob_size*/
-    "pairing.Pairing",             /*tp_name*/
-    sizeof(Pairing),             /*tp_basicsize*/
-    0,                         /*tp_itemsize*/
-    (destructor)Pairing_dealloc, /*tp_dealloc*/
-    0,                         /*tp_print*/
-    0,                         /*tp_getattr*/
-    0,                         /*tp_setattr*/
-    0,                         /*tp_compare*/
-    (reprfunc)Pairing_print,   /*tp_repr*/
-    0,       /*tp_as_number*/
-    0,                         /*tp_as_sequence*/
-    0,                         /*tp_as_mapping*/
-    0,                         /*tp_hash */
-    0, 						/*tp_call*/
-    (reprfunc)Pairing_print,   /*tp_str*/
-    0,                         /*tp_getattro*/
-    0,                         /*tp_setattro*/
-    0,                         /*tp_as_buffer*/
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-    "Pairing group parameters",           /* tp_doc */
-    0,		               /* tp_traverse */
-    0,		               /* tp_clear */
-    0,		   /* tp_richcompare */
-    0,		               /* tp_weaklistoffset */
-    0,		               /* tp_iter */
-    0,		               /* tp_iternext */
-    0,           /* tp_methods */
-    0,           /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    (initproc) Pairing_init,      /* tp_init */
-    0,                         /* tp_alloc */
-    Pairing_new,                 /* tp_new */
+  PyObject_HEAD_INIT(NULL)
+  0,                         /*ob_size*/
+  "pairing.Pairing",             /*tp_name*/
+  sizeof(Pairing),             /*tp_basicsize*/
+  0,                         /*tp_itemsize*/
+  (destructor)Pairing_dealloc, /*tp_dealloc*/
+  0,                         /*tp_print*/
+  0,                         /*tp_getattr*/
+  0,                         /*tp_setattr*/
+  0,                         /*tp_compare*/
+  (reprfunc)Pairing_print,   /*tp_repr*/
+  0,       /*tp_as_number*/
+  0,                         /*tp_as_sequence*/
+  0,                         /*tp_as_mapping*/
+  0,                         /*tp_hash */
+  0, 						/*tp_call*/
+  (reprfunc)Pairing_print,   /*tp_str*/
+  0,                         /*tp_getattro*/
+  0,                         /*tp_setattro*/
+  0,                         /*tp_as_buffer*/
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
+  "Pairing group parameters",           /* tp_doc */
+  0,		               /* tp_traverse */
+  0,		               /* tp_clear */
+  0,		   /* tp_richcompare */
+  0,		               /* tp_weaklistoffset */
+  0,		               /* tp_iter */
+  0,		               /* tp_iternext */
+  0,           /* tp_methods */
+  0,           /* tp_members */
+  0,                         /* tp_getset */
+  0,                         /* tp_base */
+  0,                         /* tp_dict */
+  0,                         /* tp_descr_get */
+  0,                         /* tp_descr_set */
+  0,                         /* tp_dictoffset */
+  (initproc) Pairing_init,      /* tp_init */
+  0,                         /* tp_alloc */
+  Pairing_new,                 /* tp_new */
 };
 
 #endif
 
 #if PY_MAJOR_VERSION >= 3
 PyNumberMethods element_number = {
-	    instance_add,            /* nb_add */
-	    instance_sub,            /* nb_subtract */
-	    Element_mul,            /* nb_multiply */
-	    0,      		    /* nb_remainder */
-	    0,					/* nb_divmod */
-	    Element_pow,			/* nb_power */
-	    instance_negate,            /* nb_negative */
-	    0,            /* nb_positive */
-	    0,            /* nb_absolute */
-	    0,          	/* nb_bool */
-	    (unaryfunc)instance_invert,  /* nb_invert */
-	    0,                    /* nb_lshift */
-	    0,                    /* nb_rshift */
-	    0,                       /* nb_and */
-	    0,                       /* nb_xor */
-	    0,                        /* nb_or */
-	    (unaryfunc)Element_long,           /* nb_int */
-	    0,						/* nb_reserved */
-	    0,          			/* nb_float */
-	    instance_add,            /* nb_inplace_add */
-	    instance_sub,            /* nb_inplace_subtract */
-	    Element_mul,            /* nb_inplace_multiply */
-	    0,      			/* nb_inplace_remainder */
-	    Element_pow,		    /* nb_inplace_power */
-	    0,                   /* nb_inplace_lshift */
-	    0,                   /* nb_inplace_rshift */
-	    0,                      /* nb_inplace_and */
-	    0,                      /* nb_inplace_xor */
-	    0,                       /* nb_inplace_or */
-	    0,                  /* nb_floor_divide */
-	    Element_div,                   /* nb_true_divide */
-	    0,                 /* nb_inplace_floor_divide */
-	    Element_div,                  /* nb_inplace_true_divide */
-	    0,          /* nb_index */
+  instance_add,            /* nb_add */
+  instance_sub,            /* nb_subtract */
+  Element_mul,            /* nb_multiply */
+  0,      		    /* nb_remainder */
+  0,					/* nb_divmod */
+  Element_pow,			/* nb_power */
+  instance_negate,            /* nb_negative */
+  0,            /* nb_positive */
+  0,            /* nb_absolute */
+  0,          	/* nb_bool */
+  (unaryfunc)instance_invert,  /* nb_invert */
+  0,                    /* nb_lshift */
+  0,                    /* nb_rshift */
+  0,                       /* nb_and */
+  0,                       /* nb_xor */
+  0,                        /* nb_or */
+  (unaryfunc)Element_long,           /* nb_int */
+  0,						/* nb_reserved */
+  0,          			/* nb_float */
+  instance_add,            /* nb_inplace_add */
+  instance_sub,            /* nb_inplace_subtract */
+  Element_mul,            /* nb_inplace_multiply */
+  0,      			/* nb_inplace_remainder */
+  Element_pow,		    /* nb_inplace_power */
+  0,                   /* nb_inplace_lshift */
+  0,                   /* nb_inplace_rshift */
+  0,                      /* nb_inplace_and */
+  0,                      /* nb_inplace_xor */
+  0,                       /* nb_inplace_or */
+  0,                  /* nb_floor_divide */
+  Element_div,                   /* nb_true_divide */
+  0,                 /* nb_inplace_floor_divide */
+  Element_div,                  /* nb_inplace_true_divide */
+  0,          /* nb_index */
 };
 
 PyTypeObject ElementType = {
-	PyVarObject_HEAD_INIT(NULL, 0)
-	"pairing.Element",             /*tp_name*/
-	sizeof(Element),         /*tp_basicsize*/
-	0,                         /*tp_itemsize*/
-	(destructor)Element_dealloc, /*tp_dealloc*/
-	0,                         /*tp_print*/
-	0,                         /*tp_getattr*/
-	0,                         /*tp_setattr*/
-	0,			   				/*tp_reserved*/
-	(reprfunc)Element_print, /*tp_repr*/
-	&element_number,               /*tp_as_number*/
-	0,                         /*tp_as_sequence*/
-	0,                         /*tp_as_mapping*/
-	(hashfunc)Element_index,   /*tp_hash */
-	0,                         /*tp_call*/
-	(reprfunc)Element_print, /*tp_str*/
-	0,                         /*tp_getattro*/
-	0,                         /*tp_setattro*/
-	0,                         /*tp_as_buffer*/
-	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-	"Pairing element objects",           /* tp_doc */
-	0,		               /* tp_traverse */
-	0,		               /* tp_clear */
-	Element_equals,		       /* tp_richcompare */
-	0,		               /* tp_weaklistoffset */
-	0,		               /* tp_iter */
-	0,		               /* tp_iternext */
-	Element_methods,             /* tp_methods */
-	Element_members,             /* tp_members */
-	0,                         /* tp_getset */
-	0,                         /* tp_base */
-	0,                         /* tp_dict */
-	0,                         /* tp_descr_get */
-	0,                         /* tp_descr_set */
-	0,                         /* tp_dictoffset */
-	(initproc)Element_init,      /* tp_init */
-	0,                         /* tp_alloc */
-	Element_new,                 /* tp_new */
+  PyVarObject_HEAD_INIT(NULL, 0)
+  "pairing.Element",             /*tp_name*/
+  sizeof(Element),         /*tp_basicsize*/
+  0,                         /*tp_itemsize*/
+  (destructor)Element_dealloc, /*tp_dealloc*/
+  0,                         /*tp_print*/
+  0,                         /*tp_getattr*/
+  0,                         /*tp_setattr*/
+  0,			   				/*tp_reserved*/
+  (reprfunc)Element_print, /*tp_repr*/
+  &element_number,               /*tp_as_number*/
+  0,                         /*tp_as_sequence*/
+  0,                         /*tp_as_mapping*/
+  (hashfunc)Element_index,   /*tp_hash */
+  0,                         /*tp_call*/
+  (reprfunc)Element_print, /*tp_str*/
+  0,                         /*tp_getattro*/
+  0,                         /*tp_setattro*/
+  0,                         /*tp_as_buffer*/
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
+  "Pairing element objects",           /* tp_doc */
+  0,		               /* tp_traverse */
+  0,		               /* tp_clear */
+  Element_equals,		       /* tp_richcompare */
+  0,		               /* tp_weaklistoffset */
+  0,		               /* tp_iter */
+  0,		               /* tp_iternext */
+  Element_methods,             /* tp_methods */
+  Element_members,             /* tp_members */
+  0,                         /* tp_getset */
+  0,                         /* tp_base */
+  0,                         /* tp_dict */
+  0,                         /* tp_descr_get */
+  0,                         /* tp_descr_set */
+  0,                         /* tp_dictoffset */
+  (initproc)Element_init,      /* tp_init */
+  0,                         /* tp_alloc */
+  Element_new,                 /* tp_new */
 };
 #else
 /* python 2.x series */
 PyNumberMethods element_number = {
-    instance_add,                       /* nb_add */
-    instance_sub,                       /* nb_subtract */
-    Element_mul,                        /* nb_multiply */
-    Element_div,                       /* nb_divide */
-    0,                      /* nb_remainder */
-    0,						/* nb_divmod */
-    Element_pow,						/* nb_power */
-    instance_negate,            		/* nb_negative */
-    0,            /* nb_positive */
-    0,            /* nb_absolute */
-    0,          	/* nb_nonzero */
-    (unaryfunc)instance_invert,         /* nb_invert */
-    0,                    /* nb_lshift */
-    0,                    /* nb_rshift */
-    0,                       /* nb_and */
-    0,                       /* nb_xor */
-    0,                        /* nb_or */
-    0,                    				/* nb_coerce */
-    0,            /* nb_int */
-    (unaryfunc)Element_long,           /* nb_long */
-    0,          /* nb_float */
-    0,            /* nb_oct */
-    0,            /* nb_hex */
-    instance_add,                      /* nb_inplace_add */
-    instance_sub,                      /* nb_inplace_subtract */
-    Element_mul,                      /* nb_inplace_multiply */
-    Element_div,                      /* nb_inplace_divide */
-    0,                      /* nb_inplace_remainder */
-    0,								/* nb_inplace_power */
-    0,                   /* nb_inplace_lshift */
-    0,                   /* nb_inplace_rshift */
-    0,                      /* nb_inplace_and */
-    0,                      /* nb_inplace_xor */
-    0,                       /* nb_inplace_or */
-    0,                  /* nb_floor_divide */
-    0,                   /* nb_true_divide */
-    0,                 /* nb_inplace_floor_divide */
-    0,                  /* nb_inplace_true_divide */
-    0,          /* nb_index */
+  instance_add,                       /* nb_add */
+  instance_sub,                       /* nb_subtract */
+  Element_mul,                        /* nb_multiply */
+  Element_div,                       /* nb_divide */
+  0,                      /* nb_remainder */
+  0,						/* nb_divmod */
+  Element_pow,						/* nb_power */
+  instance_negate,            		/* nb_negative */
+  0,            /* nb_positive */
+  0,            /* nb_absolute */
+  0,          	/* nb_nonzero */
+  (unaryfunc)instance_invert,         /* nb_invert */
+  0,                    /* nb_lshift */
+  0,                    /* nb_rshift */
+  0,                       /* nb_and */
+  0,                       /* nb_xor */
+  0,                        /* nb_or */
+  0,                    				/* nb_coerce */
+  0,            /* nb_int */
+  (unaryfunc)Element_long,           /* nb_long */
+  0,          /* nb_float */
+  0,            /* nb_oct */
+  0,            /* nb_hex */
+  instance_add,                      /* nb_inplace_add */
+  instance_sub,                      /* nb_inplace_subtract */
+  Element_mul,                      /* nb_inplace_multiply */
+  Element_div,                      /* nb_inplace_divide */
+  0,                      /* nb_inplace_remainder */
+  0,								/* nb_inplace_power */
+  0,                   /* nb_inplace_lshift */
+  0,                   /* nb_inplace_rshift */
+  0,                      /* nb_inplace_and */
+  0,                      /* nb_inplace_xor */
+  0,                       /* nb_inplace_or */
+  0,                  /* nb_floor_divide */
+  0,                   /* nb_true_divide */
+  0,                 /* nb_inplace_floor_divide */
+  0,                  /* nb_inplace_true_divide */
+  0,          /* nb_index */
 };
 
 PyTypeObject ElementType = {
-    PyObject_HEAD_INIT(NULL)
-    0,                         /*ob_size*/
-    "pairing.Element",             /*tp_name*/
-    sizeof(Element),             /*tp_basicsize*/
-    0,                         /*tp_itemsize*/
-    (destructor)Element_dealloc, /*tp_dealloc*/
-    0,                         /*tp_print*/
-    0,                         /*tp_getattr*/
-    0,                         /*tp_setattr*/
-    0,                         /*tp_compare*/
-    (reprfunc)Element_print,   /*tp_repr*/
-    &element_number,       /*tp_as_number*/
-    0,                         /*tp_as_sequence*/
-    0,                         /*tp_as_mapping*/
-    (hashfunc)Element_index,   /*tp_hash */
-    0, 						/*tp_call*/
-    (reprfunc)Element_print,   /*tp_str*/
-    0,                         /*tp_getattro*/
-    0,                         /*tp_setattro*/
-    0,                         /*tp_as_buffer*/
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_CHECKTYPES, /*tp_flags*/
-	"Pairing element objects",           /* tp_doc */
-    0,		               /* tp_traverse */
-    0,		               /* tp_clear */
-    Element_equals,		   /* tp_richcompare */
-    0,		               /* tp_weaklistoffset */
-    0,		               /* tp_iter */
-    0,		               /* tp_iternext */
-    Element_methods,           /* tp_methods */
-    Element_members,           /* tp_members */
-    0,                         /* tp_getset */
-    0,                         /* tp_base */
-    0,                         /* tp_dict */
-    0,                         /* tp_descr_get */
-    0,                         /* tp_descr_set */
-    0,                         /* tp_dictoffset */
-    (initproc) Element_init,      /* tp_init */
-    0,                         /* tp_alloc */
-    Element_new,                 /* tp_new */
+  PyObject_HEAD_INIT(NULL)
+  0,                         /*ob_size*/
+  "pairing.Element",             /*tp_name*/
+  sizeof(Element),             /*tp_basicsize*/
+  0,                         /*tp_itemsize*/
+  (destructor)Element_dealloc, /*tp_dealloc*/
+  0,                         /*tp_print*/
+  0,                         /*tp_getattr*/
+  0,                         /*tp_setattr*/
+  0,                         /*tp_compare*/
+  (reprfunc)Element_print,   /*tp_repr*/
+  &element_number,       /*tp_as_number*/
+  0,                         /*tp_as_sequence*/
+  0,                         /*tp_as_mapping*/
+  (hashfunc)Element_index,   /*tp_hash */
+  0, 						/*tp_call*/
+  (reprfunc)Element_print,   /*tp_str*/
+  0,                         /*tp_getattro*/
+  0,                         /*tp_setattro*/
+  0,                         /*tp_as_buffer*/
+  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_CHECKTYPES, /*tp_flags*/
+  "Pairing element objects",           /* tp_doc */
+  0,		               /* tp_traverse */
+  0,		               /* tp_clear */
+  Element_equals,		   /* tp_richcompare */
+  0,		               /* tp_weaklistoffset */
+  0,		               /* tp_iter */
+  0,		               /* tp_iternext */
+  Element_methods,           /* tp_methods */
+  Element_members,           /* tp_members */
+  0,                         /* tp_getset */
+  0,                         /* tp_base */
+  0,                         /* tp_dict */
+  0,                         /* tp_descr_get */
+  0,                         /* tp_descr_set */
+  0,                         /* tp_dictoffset */
+  (initproc) Element_init,      /* tp_init */
+  0,                         /* tp_alloc */
+  Element_new,                 /* tp_new */
 };
 
 #endif
@@ -1988,17 +2057,19 @@ static struct module_state _state;
 
 // end
 PyMemberDef Element_members[] = {
-	{"type", T_INT, offsetof(Element, element_type), 0,
-		"group type"},
-    {"initialized", T_INT, offsetof(Element, elem_initialized), 0,
-		"determine initialization status"},
-    {NULL}  /* Sentinel */
+  {"type", T_INT, offsetof(Element, element_type), 0,
+  "group type"},
+  {"initialized", T_INT, offsetof(Element, elem_initialized), 0,
+  "determine initialization status"},
+  {"preproc", T_INT, offsetof(Element, elem_initPP), 0,
+  "determine pre-processing status"},
+  {NULL}  /* Sentinel */
 };
 
 PyMethodDef Element_methods[] = {
-	{"initPP", (PyCFunction)Element_initPP, METH_NOARGS, "Initialize the pre-processing field of element."},
-	{"set", (PyCFunction)Element_set, METH_VARARGS, "Set an element to a fixed value."},
-    {NULL}  /* Sentinel */
+  {"initPP", (PyCFunction)Element_initPP, METH_NOARGS, "Initialize the pre-processing field of element."},
+  {"set", (PyCFunction)Element_set, METH_VARARGS, "Set an element to a fixed value."},
+  {NULL}  /* Sentinel */
 };
 
 PyMethodDef pairing_methods[] = {
@@ -2029,8 +2100,8 @@ static int pairings_traverse(PyObject *m, visitproc visit, void *arg) {
 }
 
 static int pairings_clear(PyObject *m) {
-	Py_CLEAR(GETSTATE(m)->error);
-    Py_XDECREF(ElementError);
+  Py_CLEAR(GETSTATE(m)->error);
+  Py_XDECREF(ElementError);
 	return 0;
 }
 
@@ -2074,44 +2145,44 @@ void initpairing(void) 		{
         CLEAN_EXIT;
 #ifdef BENCHMARK_ENABLED
     if(import_benchmark() < 0)
-        CLEAN_EXIT;
+      CLEAN_EXIT;
     if(PyType_Ready(&BenchmarkType) < 0)
-        CLEAN_EXIT;
+      CLEAN_EXIT;
     if(PyType_Ready(&OperationsType) < 0)
-    	CLEAN_EXIT;
+      CLEAN_EXIT;
 #endif
 
-    struct module_state *st = GETSTATE(m);
-    st->error = PyErr_NewException("pairing.Error", NULL, NULL);
-    if(st->error == NULL)
-        CLEAN_EXIT;
-    ElementError = st->error;
-    Py_INCREF(ElementError);
+  struct module_state *st = GETSTATE(m);
+  st->error = PyErr_NewException("pairing.Error", NULL, NULL);
+  if(st->error == NULL)
+      CLEAN_EXIT;
+  ElementError = st->error;
+  Py_INCREF(ElementError);
 
-    Py_INCREF(&ElementType);
-    PyModule_AddObject(m, "pc_element", (PyObject *)&ElementType);
-    Py_INCREF(&PairingType);
-    PyModule_AddObject(m, "pairing", (PyObject *)&PairingType);
+  Py_INCREF(&ElementType);
+  PyModule_AddObject(m, "pc_element", (PyObject *)&ElementType);
+  Py_INCREF(&PairingType);
+  PyModule_AddObject(m, "pairing", (PyObject *)&PairingType);
 
-	PyModule_AddIntConstant(m, "ZR", ZR);
-	PyModule_AddIntConstant(m, "G1", G1);
-	PyModule_AddIntConstant(m, "G2", G2);
-	PyModule_AddIntConstant(m, "GT", GT);
+  PyModule_AddIntConstant(m, "ZR", ZR);
+  PyModule_AddIntConstant(m, "G1", G1);
+  PyModule_AddIntConstant(m, "G2", G2);
+  PyModule_AddIntConstant(m, "GT", GT);
 
 #ifdef BENCHMARK_ENABLED
-	ADD_BENCHMARK_OPTIONS(m);
-	PyModule_AddStringConstant(m, "Pair", 	  _PAIR_OPT);
-	PyModule_AddStringConstant(m, "Granular", _GRAN_OPT);
+  ADD_BENCHMARK_OPTIONS(m);
+  PyModule_AddStringConstant(m, "Pair", 	  _PAIR_OPT);
+  PyModule_AddStringConstant(m, "Granular", _GRAN_OPT);
 #endif
 
 LEAVE:
-    if (PyErr_Occurred()) {
-		PyErr_Clear();
-        Py_XDECREF(m);
-    	INITERROR;
-    } 
+  if (PyErr_Occurred()) {
+    PyErr_Clear();
+    Py_XDECREF(m);
+    INITERROR;
+  }
 
 #if PY_MAJOR_VERSION >= 3
-	return m;
+  return m;
 #endif
 }

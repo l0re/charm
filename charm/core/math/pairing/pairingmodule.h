@@ -41,9 +41,9 @@
 #include <fcntl.h>
 #include "benchmarkmodule.h"
 #include "base64.h"
-#include "openssl/objects.h"
-#include "openssl/rand.h"
-#include "openssl/sha.h"
+#include <openssl/objects.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
 #ifdef BENCHMARK_ENABLED
 #include "benchmark_util.h"
 #endif
@@ -110,20 +110,20 @@ typedef struct {
 	int group_init;
 	uint8_t hash_id[ID_LEN+1];
 #ifdef BENCHMARK_ENABLED
-	Operations *gBench;
-    Benchmark *dBench;
-	uint8_t bench_id[ID_LEN+1];
+  Operations *gBench;
+  Benchmark *dBench;
+  uint8_t bench_id[ID_LEN+1];
 #endif
 } Pairing;
 
 typedef struct {
-    PyObject_HEAD
-	Pairing *pairing;
-	element_t e;
-	GroupType element_type;
-    int elem_initialized;
-	element_pp_t e_pp;
-    int elem_initPP;
+  PyObject_HEAD
+  Pairing *pairing;
+  element_t e;
+  GroupType element_type;
+  int elem_initialized;
+  element_pp_t e_pp;
+  int elem_initPP;
 } Element;
 
 #define Check_Elements(o1, o2)  PyElement_Check(o1) && PyElement_Check(o2)
@@ -164,7 +164,7 @@ PyObject *Element_call(Element *elem, PyObject *args, PyObject *kwds);
 void	Element_dealloc(Element* self);
 Element *convertToZR(PyObject *LongObj, PyObject *elemObj);
 
-PyObject *Apply_pairing(Element *self, PyObject *args);
+PyObject *Apply_pairing(PyObject *self, PyObject *args);
 PyObject *sha2_hash(Element *self, PyObject *args);
 
 int exp_rule(GroupType lhs, GroupType rhs);
@@ -205,7 +205,7 @@ void print_mpz(mpz_t x, int base);
 
 #define IS_SAME_GROUP(a, b) \
 	if(strncmp((const char *) a->pairing->hash_id, (const char *) b->pairing->hash_id, ID_LEN) != 0) {	\
-		PyErr_SetString(ElementError, "mixing group elements from different curves.");	\
+		PyErr_SetString(PyExc_ValueError, "mixing group elements from different curves.");	\
 		return NULL;	\
 	}
 
@@ -219,10 +219,5 @@ void print_mpz(mpz_t x, int base);
 	if(check) { 						\
 	PyErr_SetString(ElementError, msg); \
 	return NULL;	}
-
-#define EXITCODE_IF(check, msg, code) \
-	if(check) {						     \
-	PyErr_SetString(ElementError, msg);	 \
-	return Py_BuildValue("i", code);	}
 
 #endif

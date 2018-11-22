@@ -39,13 +39,13 @@
 #include "base64.h"
 
 /* Openssl header files */
-#include "openssl/ec.h"
-#include "openssl/err.h"
-#include "openssl/obj_mac.h"
-#include "openssl/objects.h"
-#include "openssl/rand.h"
-#include "openssl/bn.h"
-#include "openssl/sha.h"
+#include <openssl/ec.h>
+#include <openssl/err.h>
+#include <openssl/obj_mac.h>
+#include <openssl/objects.h>
+#include <openssl/rand.h>
+#include <openssl/bn.h>
+#include <openssl/sha.h>
 #ifdef BENCHMARK_ENABLED
 #include "benchmark_util.h"
 #endif
@@ -65,7 +65,7 @@
 #define HASH_FUNCTION_STR_TO_G_CRH		11
 #define HASH_FUNCTION_KEM_DERIVE		12
 #define HASH_LEN						SHA256_DIGEST_LENGTH
-#define RESERVED_ENCODING_BYTES			2
+#define RESERVED_ENCODING_BYTES			4
 
 PyTypeObject ECType;
 PyTypeObject ECGroupType;

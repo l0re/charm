@@ -97,13 +97,36 @@ class PairingGroup():
         """hashes objects into ZR, G1 or G2 depending on the pairing curve"""
         return H(self.Pairing, args, type)
     
-    def serialize(self, obj):
-        """serializes a pairing object into bytes"""
-        return serialize(obj)
+    def serialize(self, obj, compression=True):
+        """Serialize a pairing object into bytes.
+
+           :param compression: serialize the compressed representation of the
+                curve element, taking about half the space but potentially
+                incurring in non-negligible computation costs when
+                deserializing. Default is True for compatibility with previous
+                versions of charm.
+            
+            >>> p = PairingGroup('SS512')
+            >>> v1 = p.random(G1)
+            >>> b1 = p.serialize(v1)
+            >>> b1 == p.serialize(v1, compression=True)
+            True
+            >>> v1 == p.deserialize(b1)
+            True
+            >>> b1 = p.serialize(v1, compression=False)
+            >>> v1 == p.deserialize(b1, compression=False)
+            True
+        """
+        return serialize(obj, compression)
     
-    def deserialize(self, obj):
-        """deserializes into a pairing object"""
-        return deserialize(self.Pairing, obj)
+    def deserialize(self, obj, compression=True):
+        """Deserialize a bytes serialized element into a pairing object. 
+
+           :param compression: must be used for objects serialized with the
+                compression parameter set to True. Default is True for
+                compatibility with previous versions of charm.
+        """
+        return deserialize(self.Pairing, obj, compression)
     
     def debug(self, data, prefix=None):
         if not self._verbose:
@@ -150,3 +173,13 @@ class PairingGroup():
         """retrieves benchmark results for any of these options: 
         RealTime, CpuTime, Mul, Div, Add, Sub, Exp, Pair, Granular"""
         return pg.GetBenchmark(self.Pairing, option)
+
+
+def extract_key(g):
+    """
+    Given a group element, extract a symmetric key
+    :param g:
+    :return:
+    """
+    g_in_hex = hashPair(g).decode('utf-8')
+    return bytes(bytearray.fromhex(g_in_hex))

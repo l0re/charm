@@ -5,6 +5,9 @@ log.txt
 dist/
 build/
 doc/build/*
+charm/config.py
+.cache/
+.eggs/
 *.pyc 
 **.pyc
 *.swp
@@ -14,6 +17,7 @@ doc/build/*
 **__pycache__
 .project
 .pydevproject
+.DS_Store
 
 
 *.py[cod]
